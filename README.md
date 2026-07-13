@@ -28,6 +28,12 @@
 - 配套 PowerShell 脚本生成桌面快捷方式，双击即用
 - 零依赖，仅使用 Node.js 内置模块（`node:sqlite` 等）
 
+## 已知限制
+
+**只支持 Anthropic 原生格式的供应商。**
+
+本工具通过 `claude --settings` 注入供应商配置启动，Claude Code 直连供应商的真实 API 端点，不经过 CC-Switch 的本地路由，因此只支持 `Anthropic` 格式（原生 Anthropic Messages）的供应商。
+
 ## 项目结构
 
 > `settings/settings_<id>.json` 文件含 API Key 等敏感信息，已通过 `.gitignore` 忽略，请勿提交到远程代码仓库
@@ -88,10 +94,10 @@ powershell -ExecutionPolicy Bypass -File .\create-shortcut.ps1
 node cc-launcher.mjs [供应商名称] [claude 额外参数...]
 ```
 
-| 参数位置    | 说明                                               |
-| :---------- | :------------------------------------------------- |
-| 第 1 个参数 | CC-Switch 中的供应商名称（可选，不传则交互选择）   |
-| 后续参数    | 透传给 `claude` CLI，例如 `--continue`、`--resume` |
+| 参数位置    | 说明                                              |
+| :---------- | :------------------------------------------------ |
+| 第 1 个参数 | CC-Switch 中的供应商名称（可选，不传则交互选择）  |
+| 后续参数    | 透传给`claude` CLI，例如 `--continue`、`--resume` |
 
 ## 工作原理
 

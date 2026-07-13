@@ -21,6 +21,10 @@ $MjsPath = Join-Path $ScriptDir "cc-launcher.mjs"
 
 if (-not (Test-Path $MjsPath)) {
   Write-Host "错误：找不到 $MjsPath" -ForegroundColor Red
+  Write-Host "按任意键退出..." -ForegroundColor DarkGray
+  [Console]::CursorVisible = $false
+  $null = $Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown")
+  [Console]::CursorVisible = $true
   exit 1
 }
 
@@ -28,6 +32,10 @@ if (-not (Test-Path $MjsPath)) {
 $NodePath = (Get-Command node -ErrorAction SilentlyContinue).Source
 if (-not $NodePath) {
   Write-Host "错误：未找到 node.exe ，请确认 Node.js 已安装并加入 PATH" -ForegroundColor Red
+  Write-Host "按任意键退出..." -ForegroundColor DarkGray
+  [Console]::CursorVisible = $false
+  $null = $Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown")
+  [Console]::CursorVisible = $true
   exit 1
 }
 
@@ -35,6 +43,10 @@ if (-not $NodePath) {
 if (-not (Test-Path $WorkingDirectory)) {
   Write-Host "错误：起始位置不存在：$WorkingDirectory" -ForegroundColor Red
   Write-Host "请修改脚本配置区的 `$WorkingDirectory" -ForegroundColor Yellow
+  Write-Host "按任意键退出..." -ForegroundColor DarkGray
+  [Console]::CursorVisible = $false
+  $null = $Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown")
+  [Console]::CursorVisible = $true
   exit 1
 }
 
@@ -58,7 +70,16 @@ try {
   Write-Host "  目标:      $NodePath" -ForegroundColor Gray
   Write-Host "  参数:      $MjsPath `"$ProviderName`"" -ForegroundColor Gray
   Write-Host "  起始位置:  $WorkingDirectory" -ForegroundColor Gray
+  Write-Host ""
+  Write-Host "按任意键退出..." -ForegroundColor DarkGray
+  [Console]::CursorVisible = $false
+  $null = $Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown")
+  [Console]::CursorVisible = $true
 } catch {
   Write-Host "创建快捷方式失败：$_" -ForegroundColor Red
+  Write-Host "按任意键退出..." -ForegroundColor DarkGray
+  [Console]::CursorVisible = $false
+  $null = $Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown")
+  [Console]::CursorVisible = $true
   exit 1
 }

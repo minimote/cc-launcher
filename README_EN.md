@@ -28,6 +28,12 @@
 - Bundled PowerShell script to create a desktop shortcut; double-click to launch
 - Zero dependencies, uses only Node.js built-in modules (`node:sqlite`, etc.)
 
+## Known Limitations
+
+**Only supports providers using the native Anthropic format.**
+
+This tool launches Claude by injecting the provider configuration via `claude --settings`; Claude Code connects directly to the provider's real API endpoint without going through CC-Switch's local router, so only `Anthropic`-format (native Anthropic Messages) providers are supported.
+
 ## Project Structure
 
 > `settings/settings_<id>.json` contains sensitive information such as API keys. It is ignored via `.gitignore`; do not commit it to remote repositories.
@@ -111,7 +117,7 @@ node cc-launcher.mjs [provider_name] [extra claude args...]
 
 ## Related Projects
 
-- **CodingPlan Usage Query** ([Gitee](https://gitee.com/minimote/coding-plan-usage-query) | [GitHub](https://github.com/minimote/coding-plan-usage-query)): Query Coding Plan usage and reset countdowns across platforms; recommended for use with ccstatusline / ccstatusline-zh custom commands, displayed in the Claude Code status bar
+- **CodingPlan Usage Query** ([Gitee](https://gitee.com/minimote/coding-plan-usage-query) | [GitHub](https://github.com/minimote/coding-plan-usage-query)): Query Coding Plan usage and reset countdowns across platforms; recommended for use with ccstatusline / ccstatusline-zh custom commands, displayed in the Claude Code status bar.
 
 ## License
 
