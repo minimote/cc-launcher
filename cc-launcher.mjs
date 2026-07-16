@@ -1,12 +1,12 @@
 /**
- * @file 使用指定的 CC-Switch 供应商启动 Claude
+ * @file 使用指定的 CC-Switch 供应商启动 Claude Code
  *
  * 从 cc-switch 数据库读取指定名称的供应商配置
- * 提取环境变量，写到 settings_xxx.json
+ * 解析供应商配置，写到 settings/settings_xxx.json
  * 然后启动 claude --settings <file>
  *
  * 用法:
- *   node cc-launcher.mjs [供应商名称]
+ *   node cc-launcher.mjs [供应商名称(可为空)]
  */
 
 import { homedir } from "node:os";
@@ -22,10 +22,7 @@ const CC_SWITCH_DIR = join(homedir(), ".cc-switch");
 /** cc-switch 数据库路径 */
 const DB_PATH = join(CC_SWITCH_DIR, "cc-switch.db");
 /** settings 文件存放目录（脚本同级的 settings/） */
-const SETTINGS_DIR = join(
-    dirname(fileURLToPath(import.meta.url)),
-    "settings",
-);
+const SETTINGS_DIR = join(dirname(fileURLToPath(import.meta.url)), "settings");
 
 /** 不允许被覆盖的系统环境变量 */
 const BLOCKED_ENV_KEYS = new Set([
@@ -59,11 +56,7 @@ async function openDb() {
     try {
         return new DatabaseSync(DB_PATH, { readOnly: true });
     } catch (err) {
-        exitWithPause(
-            `错误：无法打开数据库 ${DB_PATH}\n${
-                err?.message || "数据库可能已损坏"
-            }`,
-        );
+        exitWithPause(`错误：无法打开数据库 ${DB_PATH}\n${err?.message}`);
     }
 }
 
@@ -75,17 +68,17 @@ function exitWithPause(...args) {
 }
 
 /**
- * 交互式选择：上下键切换，回车确认
+ * 交互式选择：上下键切换，回车确认，Esc 或 Ctrl+C 退出
  * @param {string[]} items - 选项列表
  * @param {string} prompt - 提示文字
  * @returns {Promise<number>} 选中的选项索引
  */
 function interactiveSelect(items, prompt) {
     if (!process.stdin.isTTY || !process.stdout.isTTY) {
-        exitWithPause("错误：交互选择需要终端（TTY）");
+        exitWithPause("错误：交互选择需要在终端运行");
     }
 
-    const hint = "（上下键切换，回车键确认）：";
+    const hint = " (回车确认):";
     return new Promise((resolve) => {
         let cursor = 0;
 
@@ -107,29 +100,75 @@ function interactiveSelect(items, prompt) {
         process.stdin.resume();
         render();
 
+        // raw mode 下按键以字节序列传入：方向键是 \x1b[A / \x1b[B 等 3 字节转义序列，普通键 1 字节
+        // 终端可能把转义序列拆成多次传入（先 \x1b 再 [A），单独的 \x1b 用短延时等待后续字节，
+        // 以区分 Esc（无后续）与方向键（后续为 [ 开头的序列）
+        let escapeTimer = null;
+
+        function redraw() {
+            // 光标上移 totalLines 行、清除到屏幕末尾，随后重绘
+            process.stdout.write(`\x1b[${totalLines}A\x1b[J`);
+            render();
+        }
+
+        function exitSelect() {
+            process.stdin.setRawMode(false);
+            process.stdin.pause();
+            // 130 = 被 Ctrl+C 终止的约定退出码
+            process.exit(130);
+        }
+
         process.stdin.on("data", function handler(chunk) {
+            // 有待处理的 \x1b：本次以 [ 或 O 开头则合并为完整转义序列，否则视为 Esc
+            if (escapeTimer) {
+                clearTimeout(escapeTimer);
+                escapeTimer = null;
+                const next = chunk.toString();
+                if (next[0] === "[" || next[0] === "O") {
+                    chunk = Buffer.concat([Buffer.from([0x1b]), chunk]);
+                } else {
+                    exitSelect();
+                    return;
+                }
+            }
+
             const key = chunk.toString();
 
-            if (key === "\x1b[A" && cursor > 0) {
-                cursor--;
-            } else if (key === "\x1b[B" && cursor < items.length - 1) {
-                cursor++;
-            } else if (chunk[0] === 0x0d || chunk[0] === 0x0a) {
+            // 回车（CR / LF）确认
+            if (chunk[0] === 0x0d || chunk[0] === 0x0a) {
                 process.stdin.setRawMode(false);
                 process.stdin.pause();
                 process.stdin.removeListener("data", handler);
                 process.stdout.write("\n");
                 resolve(cursor);
                 return;
-            } else if (key === "\x03") {
-                process.stdin.setRawMode(false);
-                process.stdin.pause();
-                process.exit(130);
             }
 
-            // 回到顶部，清除，重绘
-            process.stdout.write(`\x1b[${totalLines}A\x1b[J`);
-            render();
+            // 单独的 \x1b：可能是 Esc，也可能是被拆分的转义序列首字节，等待短延时判定
+            if (chunk.length === 1 && chunk[0] === 0x1b) {
+                escapeTimer = setTimeout(() => {
+                    escapeTimer = null;
+                    exitSelect();
+                }, 50);
+                return;
+            }
+
+            // 上方向键
+            if (key === "\x1b[A") {
+                cursor = (cursor - 1 + items.length) % items.length;
+            } else if (key === "\x1b[B") {
+                // 下方向键
+                cursor = (cursor + 1) % items.length;
+            } else if (key === "\x03") {
+                // Ctrl+C 退出
+                exitSelect();
+                return;
+            } else {
+                // 未识别按键，不重绘
+                return;
+            }
+
+            redraw();
         });
     });
 }
@@ -152,92 +191,109 @@ function suppressExperimentalWarning() {
 /** 检查 cc-switch 数据库是否存在 */
 function checkDatabase() {
     if (!existsSync(DB_PATH)) {
-        exitWithPause(
-            `错误： cc-switch 数据库不存在：${DB_PATH}\n请确认已安装并运行过 cc-switch 桌面版`,
-        );
+        exitWithPause(`错误：cc-switch 数据库不存在：${DB_PATH}`);
     }
 }
 
 /**
- * 查询所有 claude 供应商，让用户交互选择，返回选中的名称
- * @param {string} [prompt] - 提示文字
- * @returns {Promise<string>}
+ * 从 meta JSON 解析 apiFormat，解析失败或缺失返回 null
+ * @param {string} meta - providers.meta 列的 JSON 字符串
+ * @returns {string | null}
  */
-async function pickProvider(prompt) {
-    const db = await openDb();
-    const items = db
+function getApiFormat(meta) {
+    try {
+        return JSON.parse(meta)?.apiFormat ?? null;
+    } catch {
+        return null;
+    }
+}
+
+/**
+ * 查询所有 claude 供应商，让用户交互选择，返回选中的供应商行
+ * @param {DatabaseSync} db - 已打开的数据库连接
+ * @param {string} [prompt] - 提示文字
+ * @returns {Promise<object>} 供应商行
+ */
+async function pickProvider(db, prompt) {
+    const all = db
         .prepare(
-            "SELECT name FROM providers WHERE app_type = ? " +
+            "SELECT id, name, settings_config, meta, is_current FROM providers WHERE app_type = ? " +
                 "ORDER BY sort_index, name",
         )
         .all(APP_TYPE);
 
+    // cc-launcher 通过 --settings 直接启动，无法经过 cc-switch 路由，
+    // 仅 Anthropic Messages 协议的供应商可直接使用
+    const items = all.filter((r) => {
+        return getApiFormat(r.meta) === "anthropic";
+    });
+
     if (items.length === 0) {
-        db.close();
-        exitWithPause("没有可用的供应商");
+        exitWithPause("没有可用的 Anthropic Messages 协议供应商");
     }
 
-    try {
-        const idx = await interactiveSelect(
-            items.map((r) => r.name),
-            prompt || "未指定供应商，请选择",
-        );
-        return items[idx].name;
-    } finally {
-        db.close();
-    }
+    const idx = await interactiveSelect(
+        items.map((r) => {
+            return `${r.name}${r.is_current ? " (当前全局激活)" : ""}`;
+        }),
+        prompt || "未指定，请从可用供应商中选择",
+    );
+    return items[idx];
 }
 
 /**
- * 查询并解析供应商，交互式处理未找到 / 多个匹配的情况
+ * 按名称查找供应商，交互式处理未找到 / 多个匹配 / 协议不兼容的情况
+ * @param {DatabaseSync} db - 已打开的数据库连接
  * @param {string} name - 供应商名称
  * @returns {Promise<object>} 供应商行
  */
-async function resolveProvider(name) {
-    let retries = 0;
-    const MAX_RETRIES = 3;
-    while (retries < MAX_RETRIES) {
-        retries++;
-        const db = await openDb();
-        try {
-            const rows = db
-                .prepare(
-                    `SELECT id, app_type, name, settings_config, is_current
-                     FROM providers
-                     WHERE name = ? AND app_type = ?`,
-                )
-                .all(name, APP_TYPE);
+async function resolveProvider(db, name) {
+    const rows = db
+        .prepare(
+            `SELECT id, app_type, name, settings_config, is_current, meta
+             FROM providers
+             WHERE name = ? AND app_type = ?`,
+        )
+        .all(name, APP_TYPE);
 
-            if (rows.length === 1) {
-                return rows[0];
+    let selected = null;
+    if (rows.length === 1) {
+        selected = rows[0];
+    } else if (rows.length > 1) {
+        const labels = rows.map((r) => {
+            const tags = [];
+            if (r.is_current) {
+                tags.push("当前全局激活");
             }
-
-            if (rows.length > 1) {
-                const labels = rows.map(
-                    (r) =>
-                        `${r.name} (${r.app_type}${r.is_current ? ", 当前激活" : ""})`,
-                );
-                const idx = await interactiveSelect(
-                    labels,
-                    "找到多个同名项，请选择",
-                );
-                return rows[idx];
+            if (getApiFormat(r.meta) !== "anthropic") {
+                tags.push("非 Anthropic 协议");
             }
-
-            name = await pickProvider(`未找到 "${name}"，请选择其他供应商`);
-        } finally {
-            db.close();
-        }
+            return `${r.name}${tags.length ? ` (${tags.join(", ")})` : ""}`;
+        });
+        const idx = await interactiveSelect(labels, "找到多个同名项，请选择");
+        selected = rows[idx];
     }
-    exitWithPause(`错误：多次尝试后仍未匹配到供应商 "${name}"`);
+
+    if (selected) {
+        if (getApiFormat(selected.meta) !== "anthropic") {
+            return pickProvider(
+                db,
+                `"${selected.name}" 不支持原生 Anthropic Messages 协议，请选择其他供应商`,
+            );
+        }
+        return selected;
+    }
+
+    // 未找到
+    return pickProvider(db, `未找到 "${name}"，请选择其他供应商`);
 }
 
 /**
- * 解析供应商配置，提取 env 变量
+ * 解析供应商配置，返回完整 settings 对象（env 过滤危险系统变量与非字符串值）
  * @param {string} settingsConfig - JSON 字符串
- * @returns {object} envVars
+ * @returns {object} 完整 settings 对象
  */
-function parseProviderConfig(settingsConfig) {
+function parseProviderSettings(settingsConfig) {
     let config;
     try {
         config = JSON.parse(settingsConfig);
@@ -245,38 +301,37 @@ function parseProviderConfig(settingsConfig) {
         exitWithPause("错误：解析供应商配置 JSON 失败");
     }
 
-    const envVars = {};
     if (config?.env && typeof config.env === "object") {
-        for (const [key, value] of Object.entries(config.env)) {
-            if (BLOCKED_ENV_KEYS.has(key)) {
-                console.warn(
-                    `警告：环境变量 "${key}" 为系统关键变量，已跳过（防止覆盖系统设置）`,
-                );
+        for (const key of Object.keys(config.env)) {
+            const value = config.env[key];
+            if (BLOCKED_ENV_KEYS.has(key.toUpperCase())) {
+                console.warn(`警告：环境变量 "${key}" 为系统关键变量，已跳过`);
+                delete config.env[key];
                 continue;
             }
-            if (typeof value === "string") {
-                envVars[key] = value;
-            } else if (value !== null && value !== undefined) {
-                console.warn(
-                    `警告：环境变量 "${key}" 的类型为 ${typeof value}，仅支持字符串，已跳过`,
-                );
+            if (typeof value !== "string") {
+                if (value !== null && value !== undefined) {
+                    console.warn(
+                        `警告：环境变量 "${key}" 的类型为 ${typeof value}，仅支持字符串，已跳过`,
+                    );
+                }
+                delete config.env[key];
             }
         }
     }
-    return envVars;
+    return config;
 }
 
 /**
  * 写临时 settings 文件
  * @param {string} providerId
- * @param {object} envVars
+ * @param {object} settings - 完整 settings 对象
  * @returns {string} 文件路径
  */
-function writeSettingsFile(providerId, envVars) {
+function writeSettingsFile(providerId, settings) {
     mkdirSync(SETTINGS_DIR, { recursive: true });
     const file = join(SETTINGS_DIR, `settings_${providerId}.json`);
-    const content = { env: envVars };
-    writeFileSync(file, JSON.stringify(content, null, 2), "utf-8");
+    writeFileSync(file, JSON.stringify(settings, null, 2), "utf-8");
     return file;
 }
 
@@ -288,15 +343,17 @@ function writeSettingsFile(providerId, envVars) {
 function startClaude(settingsFile, providerName) {
     console.log("");
     console.log(`Using [${providerName}]`);
-    console.log("Starting Claude...\n");
+    console.log("Starting Claude Code...\n");
 
-    const extraArgs = process.argv.slice(3).join(" ");
-    const cmd = `claude --settings "${settingsFile}"${extraArgs ? " " + extraArgs : ""}`;
-    const child = spawn(cmd, {
-        stdio: "inherit",
-        env: process.env,
-        shell: true,
-    });
+    const extraArgs = process.argv.slice(3);
+    const child = spawn(
+        "cmd.exe",
+        ["/c", "claude", "--settings", settingsFile, ...extraArgs],
+        {
+            stdio: "inherit",
+            env: process.env,
+        },
+    );
 
     const cleanupAndExit = (code = 0) => {
         try {
@@ -305,38 +362,48 @@ function startClaude(settingsFile, providerName) {
         process.exit(code);
     };
 
-    child.on("exit", (code, signal) =>
-        cleanupAndExit(signal ? 1 : (code ?? 0)),
-    );
+    child.on("exit", (code, signal) => {
+        cleanupAndExit(signal ? 1 : (code ?? 0));
+    });
     child.on("error", (err) => {
-        console.error("启动 claude 失败:", err.message);
-        exitWithPause(err.message);
+        exitWithPause(`启动 Claude Code 失败：${err.message}`);
     });
 
-    process.on("SIGINT", () => cleanupAndExit(130));
-    process.on("SIGTERM", () => cleanupAndExit(143));
+    process.on("SIGINT", () => {
+        cleanupAndExit(130);
+    });
+    process.on("SIGTERM", () => {
+        cleanupAndExit(143);
+    });
 }
 
 async function main() {
     // 供应商名称
-    let PROVIDER_NAME = process.argv[2];
+    const PROVIDER_NAME = process.argv[2];
 
     // 检查数据库
     checkDatabase();
 
-    // 未传供应商名称时交互选择
-    if (!PROVIDER_NAME) {
-        PROVIDER_NAME = await pickProvider();
+    // 打开数据库（整个选择流程复用同一个连接）
+    const db = await openDb();
+    let provider;
+    try {
+        if (!PROVIDER_NAME) {
+            // 未传供应商名称时交互选择，直接拿到供应商行
+            provider = await pickProvider(db);
+        } else {
+            // 按名称查找
+            provider = await resolveProvider(db, PROVIDER_NAME);
+        }
+    } finally {
+        db.close();
     }
 
-    // 循环直到找到唯一供应商
-    const provider = await resolveProvider(PROVIDER_NAME);
-
-    // 解析配置
-    const envVars = parseProviderConfig(provider.settings_config);
+    // 解析配置（完整 settings 对象，env 已过滤危险变量）
+    const settings = parseProviderSettings(provider.settings_config);
 
     // 写临时 settings 文件
-    const settingsFile = writeSettingsFile(provider.id, envVars);
+    const settingsFile = writeSettingsFile(provider.id, settings);
 
     // 启动 CLI
     startClaude(settingsFile, provider.name);
