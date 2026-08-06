@@ -2,17 +2,17 @@
  * @file 使用指定的 CC-Switch 供应商启动 Claude Code
  *
  * 从 cc-switch 数据库读取指定名称的供应商配置
- * 解析供应商配置，写到 settings/settings_xxx.json
+ * 解析供应商配置，写到 settings/settings_<id>.json
  * 然后启动 claude --settings <file>
  *
  * 用法:
- *   node cc-launcher.mjs [供应商名称(可为空)]
+ *   node cc-launcher.mjs [供应商名称(可为空)] [Claude Code 额外参数...]
  */
 
 import { homedir } from "node:os";
 import { join, dirname } from "node:path";
 import { existsSync, writeFileSync, mkdirSync } from "node:fs";
-import { spawn, execSync } from "node:child_process";
+import { spawn, execSync, spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 
 /** 目标 CLI 类型 */
@@ -93,7 +93,7 @@ function interactiveSelect(items, prompt) {
             }
         }
 
-        // 先输出再移到顶部，为后续重绘做准备
+        // 提示行 + 选项行的总行数，redraw 时据此上移光标回到起始位置
         const totalLines = items.length + 1;
 
         process.stdin.setRawMode(true);
@@ -209,7 +209,7 @@ function getApiFormat(meta) {
 }
 
 /**
- * 查询所有 claude 供应商，让用户交互选择，返回选中的供应商行
+ * 查询所有 Anthropic Messages 协议的 claude 供应商，让用户交互选择，返回选中的供应商行
  * @param {DatabaseSync} db - 已打开的数据库连接
  * @param {string} [prompt] - 提示文字
  * @returns {Promise<object>} 供应商行
@@ -323,37 +323,104 @@ function parseProviderSettings(settingsConfig) {
 }
 
 /**
- * 写临时 settings 文件
+ * 把 provider id 清理成 Windows 文件名安全的形式。
+ * 原样拼进文件名时，含 / 会触发 ENOENT、含 : 会写入 NTFS 备用数据流，
+ * 故把非法字符 \ / : * ? " < > | 一律替换为 _。
+ * @param {string} id
+ * @returns {string}
+ */
+function sanitizeIdForFile(id) {
+    return String(id).replace(/[\\/:*?"<>|]/g, "_");
+}
+
+/**
+ * 写运行时 settings 文件
  * @param {string} providerId
  * @param {object} settings - 完整 settings 对象
  * @returns {string} 文件路径
  */
 function writeSettingsFile(providerId, settings) {
     mkdirSync(SETTINGS_DIR, { recursive: true });
-    const file = join(SETTINGS_DIR, `settings_${providerId}.json`);
+    const file = join(SETTINGS_DIR, `settings_${sanitizeIdForFile(providerId)}.json`);
     writeFileSync(file, JSON.stringify(settings, null, 2), "utf-8");
     return file;
+}
+
+/**
+ * 按 PowerShell 单引号规则转义参数，便于把实际命令复制到 PowerShell 直接使用。
+ * 单引号内一切为字面量，内部单引号用 '' 转义；对 & | < > % " 等均安全。
+ * @param {string} arg
+ * @returns {string}
+ */
+function shellQuote(arg) {
+    return `'${String(arg).replace(/'/g, "''")}'`;
+}
+
+/**
+ * 解析 claude 的底层可执行文件路径，绕开 cmd.exe 的参数重解析。
+ *
+ * 直接 spawn cmd.exe /c claude 会让 cmd 重新解析整条命令行，
+ * 导致参数里的 %VAR% 被展开、& | 被当作命令分隔符。
+ * 这里通过 where claude 找到 claude.cmd，再按 npm 全局安装的固定相对路径
+ * 定位到真正的 claude.exe，直接 spawn 它，参数走 Node 标准 argv 解析。
+ * 找不到时返回 null，调用方退回 cmd.exe 方式。
+ * @returns {string|null}
+ */
+function resolveClaudeExe() {
+    try {
+        const r = spawnSync("where", ["claude"], { encoding: "utf-8" });
+        if (r.status !== 0 || !r.stdout) return null;
+        const cmdFile = r.stdout
+            .split(/\r?\n/)
+            .map((l) => l.trim())
+            .find((l) => l.toLowerCase().endsWith(".cmd"));
+        if (!cmdFile) return null;
+        const exe = join(
+            dirname(cmdFile),
+            "node_modules",
+            "@anthropic-ai",
+            "claude-code",
+            "bin",
+            "claude.exe",
+        );
+        return existsSync(exe) ? exe : null;
+    } catch {
+        return null;
+    }
 }
 
 /**
  * 启动 claude 并等待退出
  * @param {string} settingsFile
  * @param {string} providerName
+ * @param {string} providerId 供应商 id，注入子进程环境变量供外部脚本识别
  */
-function startClaude(settingsFile, providerName) {
+function startClaude(settingsFile, providerName, providerId) {
     console.log("");
     console.log(`Using [${providerName}]`);
-    console.log("Starting Claude Code...\n");
 
     const extraArgs = process.argv.slice(3);
-    const child = spawn(
-        "cmd.exe",
-        ["/c", "claude", "--settings", settingsFile, ...extraArgs],
-        {
-            stdio: "inherit",
-            env: process.env,
-        },
-    );
+    const claudeArgs = ["--settings", settingsFile, ...extraArgs];
+    const claudeExe = resolveClaudeExe();
+    // 拼出实际调用的命令并打印，与 spawn 同源，方便用户复制到 PowerShell 直接使用
+    const cmd = claudeExe
+        ? [claudeExe, ...claudeArgs.map(shellQuote)].join(" ")
+        : ["cmd.exe", "/c", "claude", ...claudeArgs.map(shellQuote)].join(" ");
+    console.log(`Command: \n${cmd}`);
+    console.log("Starting Claude Code...\n");
+
+    const env = { ...process.env, CC_SWITCH_PROVIDER_ID: providerId };
+    const child = claudeExe
+        ? spawn(claudeExe, claudeArgs, { stdio: "inherit", env })
+        : spawn("cmd.exe", ["/c", "claude", ...claudeArgs], {
+              stdio: "inherit",
+              env,
+          });
+    if (!claudeExe) {
+        console.warn(
+            "警告：未定位到 claude.exe，回退到 cmd.exe 启动；参数若含 % 或 & | 等字符可能被 cmd 重解析破坏。",
+        );
+    }
 
     const cleanupAndExit = (code = 0) => {
         try {
@@ -402,11 +469,11 @@ async function main() {
     // 解析配置（完整 settings 对象，env 已过滤危险变量）
     const settings = parseProviderSettings(provider.settings_config);
 
-    // 写临时 settings 文件
+    // 写运行时 settings 文件
     const settingsFile = writeSettingsFile(provider.id, settings);
 
     // 启动 CLI
-    startClaude(settingsFile, provider.name);
+    startClaude(settingsFile, provider.name, provider.id);
 }
 
 main().catch((err) => {

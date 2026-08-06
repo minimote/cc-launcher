@@ -10,7 +10,7 @@
 <p>
 
 <div align="center">
-    <a href="README.md">中文</a> | English
+    <a href="../README.md">中文</a> | English
     &emsp;----&emsp;
     <a href="https://gitee.com/minimote/cc-launcher">Gitee</a> | <a href="https://github.com/minimote/cc-launcher">GitHub</a>
 </div>
@@ -21,11 +21,13 @@
 
 ## Features
 
-- Instance-level isolation: each Claude instance launches with its own settings file, mutually independent
+- Instance-level isolation: each Claude Code instance launches with its own settings file, mutually independent
 - Read-only access to the cc-switch database, no modification to the original config
 - Interactive provider selection; automatically prompts for selection when multiple providers share the same name
 - Automatically filters critical system environment variables such as `PATH` and `HOME` to prevent accidental override of system settings
-- Bundled PowerShell script to create a shortcut; double-click to launch
+- Prints the actual command before launch for easy copy to other terminals
+- Injects a `CC_SWITCH_PROVIDER_ID` env var into each instance for external tool identification
+- Bundled PowerShell script creates a shortcut with a DiceBear initials icon; double-click to launch
 - Zero dependencies, uses only Node.js built-in modules (`node:sqlite`, etc.)
 
 ## Known Limitations
@@ -40,16 +42,18 @@ This tool launches Claude Code by injecting the provider configuration via `clau
 
 ```text
 cc-launcher/
+├── docs/                  # Docs (English README, changelog)
+├── icons/                 # Shortcut icons, generated at runtime (gitignored)
 ├── settings/              # Runtime-generated settings files (gitignored)
-├── cc-launcher.mjs        # Main script; reads the cc-switch database and launches Claude
+├── cc-launcher.mjs        # Main script; reads the cc-switch database and launches Claude Code
 └── create-shortcut.ps1    # PowerShell script that creates a shortcut for a given provider
 ```
 
 ## Prerequisites
 
 - Node.js 22.13 or later (uses the built-in `node:sqlite` module; experimental warnings are automatically suppressed)
-- CC-Switch installed, with at least one `claude`-type provider configured
-- `claude` CLI installed and available in PATH
+- CC-Switch installed, with at least one `claude` provider configured
+- `Claude Code` CLI installed and available in PATH
 
 ## Quick Start
 
@@ -63,15 +67,15 @@ cc-launcher/
 node cc-launcher.mjs
 
 # Specify a provider
-node cc-launcher.mjs "Free-ds-v4-Flash"
+node cc-launcher.mjs "xxx"
 
-# Specify a provider and pass extra arguments to claude
-node cc-launcher.mjs "Free-ds-v4-Flash" --continue
+# Specify a provider and pass extra arguments to Claude Code
+node cc-launcher.mjs "xxx" --continue
 ```
 
 ### 2. Create a Shortcut (Recommended)
 
-Edit the configuration section at the top of [create-shortcut.ps1](create-shortcut.ps1):
+Edit the configuration section at the top of [create-shortcut.ps1](../create-shortcut.ps1):
 
 ```powershell
 # Provider name in CC-Switch
@@ -80,7 +84,7 @@ $ProviderName = ""
 $WorkingDirectory = "F:\AI\workspace\Claude"
 ```
 
-Run the script to generate `<ProviderName>.lnk` in the project directory; when `$ProviderName` is empty, a generic shortcut `CC-Launcher.lnk` is generated instead
+Run the script to generate `<sanitized_name>_<hash>.lnk` in the project directory (the provider name is sanitized of illegal characters and suffixed with an 8-char hash to prevent different names from collapsing to the same filename and overwriting each other); when `$ProviderName` is empty, a generic shortcut `CC-Launcher.lnk` is generated instead. The script also calls the DiceBear API to generate an initials icon (random background color) for the shortcut, falling back to the default icon on download failure; it then prompts "enter 1 + Enter to regenerate, any other key to exit".
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File .\create-shortcut.ps1
@@ -91,7 +95,7 @@ Double-click the shortcut to launch `Claude Code` (uses the specified provider i
 ## Command Line Usage
 
 ```bash
-node cc-launcher.mjs [provider_name] [extra claude args...]
+node cc-launcher.mjs [provider_name] [extra Claude Code args...]
 ```
 
 | Position       | Description                                                                  |
@@ -103,22 +107,18 @@ node cc-launcher.mjs [provider_name] [extra claude args...]
 
 1. **Check database**: verifies `~/.cc-switch/cc-switch.db` exists
 2. **Resolve provider**:
-    - No name given -> list all `claude`-type providers using the Anthropic Messages protocol for interactive selection
+    - No name given -> list all `claude` providers that use the `Anthropic Messages` protocol for interactive selection
     - Single match -> use directly
     - Multiple matches with the same name -> prompt to pick one
     - Not found / selected provider's protocol is incompatible -> re-select
 3. **Filter env vars**: parses the provider's `settings_config` and filters its `env` field--skipping critical system variables (`PATH`, `HOME`, `USERPROFILE`, etc.) and non-string values
 4. **Write settings file**: writes the full settings object to `settings/settings_<id>.json`
-5. **Launch Claude Code**: launches via `claude --settings <file>`, forwarding extra arguments
+5. **Launch Claude Code**: launches via `claude --settings <file>`, forwarding extra arguments; prints the actual command before launch (for easy copy to other terminals) and injects a `CC_SWITCH_PROVIDER_ID` env var into the subprocess (for external tool identification)
 
-## Changelog
-
-[CHANGELOG](CHANGELOG.md)
+## [Changelog](CHANGELOG.md)
 
 ## Related Projects
 
 - **CodingPlan Usage Query** ([Gitee](https://gitee.com/minimote/coding-plan-usage-query) | [GitHub](https://github.com/minimote/coding-plan-usage-query)): Query Coding Plan package usage and reset countdowns across platforms; recommended for use with ccstatusline / ccstatusline-zh custom commands, displayed in the Claude Code status bar.
 
-## License
-
-[MIT License](LICENSE)
+## [MIT License](LICENSE)

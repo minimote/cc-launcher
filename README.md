@@ -10,7 +10,7 @@
 <p>
 
 <div align="center">
-    中文 | <a href="README_EN.md">English</a>
+    中文 | <a href="docs/README_EN.md">English</a>
     &emsp;----&emsp;
     <a href="https://gitee.com/minimote/cc-launcher">Gitee</a> | <a href="https://github.com/minimote/cc-launcher">GitHub</a>
 </div>
@@ -21,11 +21,13 @@
 
 ## 功能特点
 
-- 实例级隔离：每个 Claude 实例使用独立 settings 文件启动，互不影响
+- 实例级隔离：每个 Claude Code 实例使用独立 settings 文件启动，互不影响
 - 只读访问 cc-switch 数据库，不修改原配置
 - 支持交互式选择供应商，同名供应商自动提示选择
 - 自动过滤 `PATH`、`HOME` 等系统关键环境变量，防止误覆盖系统设置
-- 配套 PowerShell 脚本生成快捷方式，双击即用
+- 启动时打印实际命令，方便复制到其他终端直接运行
+- 为每个实例注入 `CC_SWITCH_PROVIDER_ID` 环境变量，供外部工具识别当前供应商
+- 配套 PowerShell 脚本生成带 DiceBear 首字母图标的快捷方式，双击即用
 - 零依赖，仅使用 Node.js 内置模块（`node:sqlite` 等）
 
 ## 已知限制
@@ -40,16 +42,18 @@
 
 ```text
 cc-launcher/
+├── docs/                  # 文档（英文 README、更新日志）
+├── icons/                 # 快捷方式图标，运行时生成（已 gitignore）
 ├── settings/              # 运行时生成的 settings 文件（已 gitignore）
-├── cc-launcher.mjs        # 主脚本，读取 cc-switch 数据库并启动 Claude
+├── cc-launcher.mjs        # 主脚本，读取 cc-switch 数据库并启动 Claude Code
 └── create-shortcut.ps1    # PowerShell 脚本，为指定供应商创建快捷方式
 ```
 
 ## 前置要求
 
 - Node.js 22.13 或更高版本（使用 `node:sqlite` 内置模块，实验性警告已自动屏蔽）
-- 已安装 CC-Switch 并配置过至少一个 `claude` 类型供应商
-- 已安装 `claude` CLI 并加入 PATH
+- 已安装 CC-Switch 并配置过至少一个 `claude` 供应商
+- 已安装 `Claude Code` CLI 并加入 PATH
 
 ## 快速开始
 
@@ -63,10 +67,10 @@ cc-launcher/
 node cc-launcher.mjs
 
 # 指定供应商
-node cc-launcher.mjs "Free-ds-v4-Flash"
+node cc-launcher.mjs "xxx"
 
-# 指定供应商并透传参数给 claude
-node cc-launcher.mjs "Free-ds-v4-Flash" --continue
+# 指定供应商并透传参数给 Claude Code
+node cc-launcher.mjs "xxx" --continue
 ```
 
 ### 2. 创建快捷方式（推荐）
@@ -80,7 +84,7 @@ $ProviderName = ""
 $WorkingDirectory = "F:\AI\workspace\Claude"
 ```
 
-运行脚本，会在项目目录下生成 `<ProviderName>.lnk`，`$ProviderName` 为空时生成通用快捷方式 `CC-Launcher.lnk`
+运行脚本，会在项目目录下生成 `<清理后名>_<hash>.lnk`（供应商名清理非法字符并加 8 位 hash 后缀，防止不同名清理后塌缩覆盖），`$ProviderName` 为空时生成通用快捷方式 `CC-Launcher.lnk`。脚本还会调用 DiceBear API 生成首字母图标（随机背景色）作为快捷方式图标，下载失败则回退默认图标；生成后提示「输入 1 回车重新生成，其他键退出」。
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File .\create-shortcut.ps1
@@ -91,7 +95,7 @@ powershell -ExecutionPolicy Bypass -File .\create-shortcut.ps1
 ## 命令行用法
 
 ```bash
-node cc-launcher.mjs [供应商名称] [claude 额外参数...]
+node cc-launcher.mjs [供应商名称] [Claude Code 额外参数...]
 ```
 
 | 参数位置    | 说明                                                       |
@@ -103,22 +107,18 @@ node cc-launcher.mjs [供应商名称] [claude 额外参数...]
 
 1. **检查数据库**：确认 `~/.cc-switch/cc-switch.db` 存在
 2. **解析供应商**：
-    - 未传名称 -> 列出所有 Anthropic Messages 协议的 `claude` 供应商交互选择
+    - 未传名称 -> 列出所有 `Anthropic Messages` 协议的 `claude` 供应商交互选择
     - 找到唯一匹配 -> 直接使用
     - 找到多个同名 -> 交互选择具体项
     - 未找到 / 选中项协议不兼容 -> 重新选择
 3. **过滤环境变量**：解析供应商的 `settings_config`，对其 `env` 字段做过滤——跳过系统关键变量（`PATH`、`HOME`、`USERPROFILE` 等）和非字符串值
 4. **写 settings 文件**：将完整 settings 对象写入 `settings/settings_<id>.json`
-5. **启动 Claude Code**：通过 `claude --settings <file>` 启动，额外参数透传
+5. **启动 Claude Code**：通过 `claude --settings <file>` 启动，额外参数透传；启动前打印实际命令（方便复制到其他终端），并向子进程注入 `CC_SWITCH_PROVIDER_ID` 环境变量（供外部工具识别当前供应商）
 
-## 更新日志
-
-[CHANGELOG](CHANGELOG.md)
+## [更新日志](docs/CHANGELOG.md)
 
 ## 相关项目
 
 - **CodingPlan Usage Query**（[Gitee](https://gitee.com/minimote/coding-plan-usage-query) | [GitHub](https://github.com/minimote/coding-plan-usage-query)）：查询各平台 Coding Plan 的套餐用量和重置倒计时，推荐搭配 ccstatusline / ccstatusline-zh 的自定义命令放在 Claude Code 状态栏查看。
 
-## License
-
-[MIT License](LICENSE)
+## [MIT License](LICENSE)
