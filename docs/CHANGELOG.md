@@ -1,5 +1,22 @@
 # 更新日志
 
+## v1.3.0-2026.08.07
+
+### 新增
+
+- **env 隔离机制**：读取全局 `~/.claude/settings.json` 的 env，在生成的 settings 里把这些 key 置空（`""`，Claude Code 视为未设置、不被 strip）以抵消全局泄漏，再用目标供应商的 env 覆盖；直接读文件而非从 DB `is_current` 行推断，避免用户手改/切换残留导致 DB 与文件不同步时漏掉泄漏 key
+
+### 优化
+
+- `resolveClaudeExe` 改为遍历 `PATH` 查找 `claude.cmd`，替代 `where claude`：后者在中文区域按 GBK 输出 stdout，Node 按 UTF-8 解码会让含非 ASCII 字符的路径（如中文用户名）乱码、`existsSync` 恒失败而静默回退 `cmd.exe`；PATH 在 Node 里是 Unicode 字符串无此问题，且省去子进程开销（实测约 46ms → 1ms）
+- 打印命令的主分支加 `&` 并用单引号包裹 exe 路径：含空格的路径裸写会被 PowerShell 按空格拆成命令名+参数而失败，`&` 调用 + 单引号整体作为命令名即可（spawn 本身用 argv 数组不受影响）
+- 非字符串 env 值由「删除」改为「置空为 `""`」：删除会让该 key 回退到全局 settings.json 的泄漏值，置空则被 Claude Code 视为未设置，保留隔离
+- README/README_EN 补充 `effortLevel` 等非 env 枚举字段无法隔离的说明、env 隔离机制说明，并补上 CC-Switch 仓库链接
+
+### 修复
+
+- 全局 `~/.claude/settings.json` 的 env 泄漏到目标实例的问题（cc-switch 切换时写入，用户手改或切换残留时可能与 DB 不同步，原先仅过滤目标供应商 env 无法完全防止全局泄漏）
+
 ## v1.2.0-2026.08.06
 
 ### 新增

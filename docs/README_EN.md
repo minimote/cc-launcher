@@ -25,6 +25,7 @@
 - Read-only access to the cc-switch database, no modification to the original config
 - Interactive provider selection; automatically prompts for selection when multiple providers share the same name
 - Automatically filters critical system environment variables such as `PATH` and `HOME` to prevent accidental override of system settings
+- Prevents global env leakage: blanks the env keys in the global `~/.claude/settings.json` then overrides them with the target provider's, avoiding stale env from switch leftovers or hand edits leaking into this instance
 - Prints the actual command before launch for easy copy to other terminals
 - Injects a `CC_SWITCH_PROVIDER_ID` env var into each instance for external tool identification
 - Bundled PowerShell script creates a shortcut with a DiceBear initials icon; double-click to launch
@@ -35,6 +36,10 @@
 > **Only supports providers using the native `Anthropic Messages` protocol.**
 
 This tool launches Claude Code by injecting the provider configuration via `claude --settings`; Claude Code connects directly to the provider's endpoint without going through CC-Switch's local router, so only providers using the native `Anthropic Messages` protocol are supported.
+
+> **Non-env enum fields such as `effortLevel` cannot be isolated.**
+
+Non-env enum fields such as `effortLevel` cannot be isolated via settings (`null`/`""` are stripped and then inherited from the global config), so they still follow the currently active provider.
 
 ## Project Structure
 
@@ -52,7 +57,7 @@ cc-launcher/
 ## Prerequisites
 
 - Node.js 22.13 or later (uses the built-in `node:sqlite` module; experimental warnings are automatically suppressed)
-- CC-Switch installed, with at least one `claude` provider configured
+- [CC-Switch](https://github.com/farion1231/cc-switch) installed, with at least one `claude` provider configured
 - `Claude Code` CLI installed and available in PATH
 
 ## Quick Start
@@ -111,7 +116,10 @@ node cc-launcher.mjs [provider_name] [extra Claude Code args...]
     - Single match -> use directly
     - Multiple matches with the same name -> prompt to pick one
     - Not found / selected provider's protocol is incompatible -> re-select
-3. **Filter env vars**: parses the provider's `settings_config` and filters its `env` field--skipping critical system variables (`PATH`, `HOME`, `USERPROFILE`, etc.) and non-string values
+3. **Filter env vars**: parses the provider's `settings_config` and filters its `env` field--skipping critical system variables (`PATH`, `HOME`, `USERPROFILE`, etc.); non-string values are set to `""` (treated as unset by Claude Code, avoiding fallback to global values)
+
+    > **Isolation mechanism**: cc-launcher does not change the active state; the `env` in the global `~/.claude/settings.json` leaks into this instance (written by cc-switch on switch, may diverge from the DB when hand-edited or after leftover switches). Therefore it reads that file's env directly and sets those keys to empty (`""`, treated as unset by Claude Code and not stripped) in the generated settings to cancel the leak, then overwrites them with the target provider's env.
+
 4. **Write settings file**: writes the full settings object to `settings/settings_<id>.json`
 5. **Launch Claude Code**: launches via `claude --settings <file>`, forwarding extra arguments; prints the actual command before launch (for easy copy to other terminals) and injects a `CC_SWITCH_PROVIDER_ID` env var into the subprocess (for external tool identification)
 
