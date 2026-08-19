@@ -1,5 +1,15 @@
 # 更新日志
 
+## v1.3.1-2026.08.19
+
+### 修复
+
+- 通用配置 env 在 cc-launcher 启动的实例里丢失的问题：cc-switch 的配置分两处存——通用配置（对所有供应商共享的 env，如 `CLAUDE_CODE_USE_POWERSHELL_TOOL` 等工具行为开关）存于数据库 `settings` 表 `common_config_claude`，供应商特有配置存于 `providers.settings_config`；cc-switch 切换时合并两者写入全局 `~/.claude/settings.json`（common 覆盖供应商同名 key）。本工具此前仅复刻供应商特有 env，导致通用开关缺失，又被 env 隔离逻辑置空而彻底丢失。现按 `meta.commonConfigEnabled` 门控（`true`=跟随 common、`false`/缺失=opt-out 不合并，与 cc-switch 对残留 `None` 供应商的「不合并」一致）读取通用配置 env，与供应商特有 env 合并（common 胜出，使改 common 后 `true` 供应商跟随新值，与 cc-switch 切换/编辑页愈合语义一致），作为完整 targetEnv 参与隔离
+
+### 优化
+
+- README/README_EN 补充「配置来源」「限制（仅复刻 env）」说明：阐明 cc-switch 配置分两处存及合并规则；说明本工具仅复刻 common 的 `env` 合并，不合并其非 env 字段（`hooks`、`permissions`、`enabledPlugins`、`statusLine`、`theme` 等）——Claude Code 对数组型字段跨 settings 来源是拼接而非覆盖，cc-launcher 叠在全局 `~/.claude/settings.json` 之上既无法用置空隔离它们（数组无 `""` 不回退机制，`disableAllHooks` 是全杀），强行写入又会与全局残留重复执行，故这些字段依赖全局泄漏（可能陈旧/丢失），如需随供应商正确生效请用 cc-switch 切换
+
 ## v1.3.0-2026.08.07
 
 ### 新增

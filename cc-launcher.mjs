@@ -210,6 +210,28 @@ function getApiFormat(meta) {
 }
 
 /**
+ * 从 meta JSON 解析 commonConfigEnabled，缺失或解析失败时默认 false
+ *
+ * cc-switch 的 meta.commonConfigEnabled：true=跟随 common（切换时合并 common 且
+ * common 胜出），false=opt-out（不合并）。None（缺失）是 legacy 态：cc-switch 的
+ * provider_uses_common_config None 分支仅当供应商 settings 完整包含 common 片段
+ * （settings_contain_common_config 子集判定）才合并，而启动迁移会把这类供应商
+ * 提升为 Some(true)，故残留的 None 供应商=不含 common→cc-switch 不合并。
+ *
+ * 因此缺失/解析失败时默认 false，与 cc-switch 对残留 None 供应商的"不合并"一致；
+ * true 供应商不受影响。若默认 true 会向 cc-switch 不会注入 common 的供应商注入开关
+ * @param {string} meta - providers.meta 列的 JSON 字符串
+ * @returns {boolean}
+ */
+function getCommonConfigEnabled(meta) {
+    try {
+        return JSON.parse(meta)?.commonConfigEnabled ?? false;
+    } catch {
+        return false;
+    }
+}
+
+/**
  * 查询所有 Anthropic Messages 协议的 claude 供应商，让用户交互选择，返回选中的供应商行
  * @param {DatabaseSync} db - 已打开的数据库连接
  * @param {string} [prompt] - 提示文字
@@ -325,14 +347,62 @@ function getGlobalSettingsEnv() {
 }
 
 /**
+ * 读取 cc-switch 的通用配置 env（common_config_claude）
+ *
+ * cc-switch 的配置分两处存：通用配置（对所有供应商共享的 env，如
+ * CLAUDE_CODE_USE_POWERSHELL_TOOL 等工具行为开关、以及 hooks/permissions 等）存于
+ * settings 表 common_config_claude；供应商特有配置（ANTHROPIC_BASE_URL 等真实端点）
+ * 存于 providers.settings_config。cc-switch 切换时合并两者写入全局 ~/.claude/settings.json。
+ * 本工具仅复刻 env 部分的合并（hooks/permissions 等非 env 字段不复刻，详见 README 限制说明），
+ * 故需读 settings 表的通用配置 env，与供应商特有 env 合并成完整 targetEnv
+ *
+ * @param {DatabaseSync} db - 已打开的数据库连接
+ * @returns {object|null} 通用配置 env 对象；行不存在/无 env 时静默返回 null；
+ *           读取或 JSON 解析失败（异常态）时返回 null 并打印警告，提示 fix 已静默失效
+ */
+function getCommonConfigEnv(db) {
+    let row;
+    try {
+        row = db
+            .prepare(
+                "SELECT value FROM settings WHERE key = 'common_config_claude'",
+            )
+            .get();
+    } catch (err) {
+        // 仅在 getCommonConfigEnabled=true 时被调用，common 预期存在；
+        // 读取失败属异常（如 cc-switch 升级改了表/键），fix 会静默失效，需告警
+        console.warn(
+            `警告：读取通用配置 common_config_claude 失败：${err?.message ?? err}；通用开关将不会应用`,
+        );
+        return null;
+    }
+    if (!row || !row.value) return null;
+    let cfg;
+    try {
+        cfg = JSON.parse(row.value);
+    } catch (err) {
+        // 行存在但 JSON 解析失败属异常（通用配置损坏），fix 静默失效，需告警
+        console.warn(
+            `警告：通用配置 JSON 解析失败：${err?.message ?? err}；通用开关将不会应用`,
+        );
+        return null;
+    }
+    if (!cfg.env || typeof cfg.env !== "object") return null;
+    return cfg.env;
+}
+
+/**
  * 构造隔离后的 env：先把全局 settings.json 的 env key 全置空（抵消全局泄漏），
- * 再用目标供应商的 env 覆盖，最后统一过滤系统关键变量与非字符串值
+ * 再用完整 targetEnv 覆盖，最后统一过滤系统关键变量与非字符串值
+ *
+ * targetEnv 应为「通用配置 env + 供应商特有 env」合并后的完整 env（见 main，
+ * common 覆盖供应商同名 key），否则通用开关缺失，置空后无值可覆盖，启动后丢失
  *
  * env key 设为 "" 时，ClaudeCode 会视为未设置，而不会回退到全局的值
  *
  * 非字符串值置空为 "" 而非删除，避免该 key 回退到全局 settings.json 的泄漏值
  * @param {object} globalEnv - 全局 ~/.claude/settings.json 的 env（原样）
- * @param {object} targetEnv - 目标供应商的 env（原样）
+ * @param {object} targetEnv - 通用配置 + 供应商特有 合并后的完整 env（原样）
  * @returns {object} 合成后的 env 对象
  */
 function buildIsolatedEnv(globalEnv, targetEnv) {
@@ -517,6 +587,7 @@ async function main() {
     // 取全局 settings.json 的 env，用于隔离全局泄漏（不依赖 db，先读）
     let globalEnv = getGlobalSettingsEnv();
     let provider;
+    let commonEnv = null;
     try {
         if (!PROVIDER_NAME) {
             // 未传供应商名称时交互选择，直接拿到供应商行
@@ -525,6 +596,11 @@ async function main() {
             // 按名称查找
             provider = await resolveProvider(db, PROVIDER_NAME);
         }
+        // 读取通用配置 env（db 随即关闭，故在 close 前读取）
+        // commonConfigEnabled=false 的供应商不合并通用配置，贴合 cc-switch 切换行为
+        if (getCommonConfigEnabled(provider.meta)) {
+            commonEnv = getCommonConfigEnv(db);
+        }
     } finally {
         db.close();
     }
@@ -532,9 +608,16 @@ async function main() {
     // 解析配置（完整 settings 对象）
     const settings = parseProviderSettings(provider.settings_config);
 
-    // 隔离 env：置空全局 settings.json 泄漏的变量，再用目标供应商覆盖，统一过滤
+    // 目标 env = 通用配置 env + 供应商特有 env（common 覆盖供应商同名 key，与 cc-switch 一致）
+    // cc-switch 对 commonConfigEnabled=true 的供应商，切换时合并 common 且 common 胜出
+    // （json_deep_merge(target=provider, source=common) 叶子用 common 覆盖 provider）；
+    // true 表示"跟随 common"，false 表示 opt-out（不合并，由 getCommonConfigEnabled 门控）。
+    // 故此处 common 胜出：改 common 后 true 供应商跟随新值，与 cc-switch 切换/编辑页愈合语义一致
+    const fullEnv = { ...(settings.env || {}), ...(commonEnv || {}) };
+
+    // 隔离 env：置空全局 settings.json 泄漏的变量，再用完整 targetEnv 覆盖，统一过滤
     // 非 env 的配置值无效时会被 ClaudeCode 丢弃，从而回退到全局配置，无法完整隔离
-    settings.env = buildIsolatedEnv(globalEnv, settings.env);
+    settings.env = buildIsolatedEnv(globalEnv, fullEnv);
 
     // 写运行时 settings 文件
     const settingsFile = writeSettingsFile(provider.id, settings);

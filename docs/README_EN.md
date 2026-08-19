@@ -25,7 +25,7 @@
 - Read-only access to the cc-switch database, no modification to the original config
 - Interactive provider selection; automatically prompts for selection when multiple providers share the same name
 - Automatically filters critical system environment variables such as `PATH` and `HOME` to prevent accidental override of system settings
-- Prevents global env leakage: blanks the env keys in the global `~/.claude/settings.json` then overrides them with the target provider's, avoiding stale env from switch leftovers or hand edits leaking into this instance
+- Prevents global env leakage: merges cc-switch's common config and provider-specific config into a complete env, blanks the leaked keys in the global `~/.claude/settings.json` then overrides them with the complete env—both avoiding stale env from switch leftovers or hand edits leaking into this instance and preserving common tool toggles
 - Prints the actual command before launch for easy copy to other terminals
 - Injects a `CC_SWITCH_PROVIDER_ID` env var into each instance for external tool identification
 - Bundled PowerShell script creates a shortcut with a DiceBear initials icon; double-click to launch
@@ -89,7 +89,7 @@ $ProviderName = ""
 $WorkingDirectory = "F:\AI\workspace\Claude"
 ```
 
-Run the script to generate `<sanitized_name>_<hash>.lnk` in the project directory (the provider name is sanitized of illegal characters and suffixed with an 8-char hash to prevent different names from collapsing to the same filename and overwriting each other); when `$ProviderName` is empty, a generic shortcut `CC-Launcher.lnk` is generated instead. The script also calls the DiceBear API to generate an initials icon (random background color) for the shortcut, falling back to the default icon on download failure; it then prompts "enter 1 + Enter to regenerate, any other key to exit".
+Run the script to generate `<sanitized_name>_<hash>.lnk` in the project directory (the provider name is sanitized of illegal characters and suffixed with an 8-char hash to prevent different names from collapsing to the same filename and overwriting each other); when `$ProviderName` is empty, a generic shortcut `CC-Launcher.lnk` is generated instead. The script also calls the DiceBear API to generate an initials icon (random background color) for the shortcut, falling back to the default icon on download failure; it then prompts "type 1 + Enter to regenerate, otherwise press Enter to exit".
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File .\create-shortcut.ps1
@@ -116,9 +116,13 @@ node cc-launcher.mjs [provider_name] [extra Claude Code args...]
     - Single match -> use directly
     - Multiple matches with the same name -> prompt to pick one
     - Not found / selected provider's protocol is incompatible -> re-select
-3. **Filter env vars**: parses the provider's `settings_config` and filters its `env` field--skipping critical system variables (`PATH`, `HOME`, `USERPROFILE`, etc.); non-string values are set to `""` (treated as unset by Claude Code, avoiding fallback to global values)
+3. **Filter env vars**: merges "common config env + provider-specific env" into a complete targetEnv and filters it--skipping critical system variables (`PATH`, `HOME`, `USERPROFILE`, etc.); non-string values are set to `""` (treated as unset by Claude Code, avoiding fallback to global values)
 
-    > **Isolation mechanism**: cc-launcher does not change the active state; the `env` in the global `~/.claude/settings.json` leaks into this instance (written by cc-switch on switch, may diverge from the DB when hand-edited or after leftover switches). Therefore it reads that file's env directly and sets those keys to empty (`""`, treated as unset by Claude Code and not stripped) in the generated settings to cancel the leak, then overwrites them with the target provider's env.
+    > **Config source**: cc-switch stores config in two places--common config (env shared across all providers, such as tool toggles like `CLAUDE_CODE_USE_POWERSHELL_TOOL`) in the `settings` table key `common_config_claude`, and provider-specific config (real endpoints like `ANTHROPIC_BASE_URL`) in `providers.settings_config`; on switch it merges both into the global `~/.claude/settings.json` (common overrides provider on key collision). This tool replicates that env merge (gated by `meta.commonConfigEnabled`: `true` = follow common, `false` = opt-out, no merge); common wins so that editing common propagates to `true` providers, otherwise the common toggles would be missing and get blanked by the isolation logic.
+    >
+    > **Isolation mechanism**: cc-launcher does not change the active state; the `env` in the global `~/.claude/settings.json` leaks into this instance (written by cc-switch on switch, may diverge from the DB when hand-edited or after leftover switches). Therefore it reads that file's env directly and sets those keys to empty (`""`, treated as unset by Claude Code and not stripped) in the generated settings to cancel the leak, then overwrites them with the complete targetEnv.
+    >
+    > **Limitation (env only)**: This tool only merges the `env` portion of the common config, not its non-env fields (`hooks`, `permissions`, `enabledPlugins`, `statusLine`, `theme`, etc.). Claude Code **concatenates** array fields (`hooks`, `permissions.allow/deny/ask`) across settings sources rather than overriding, and since cc-launcher is layered on top of the global `~/.claude/settings.json`, it can neither isolate them via blanking (arrays have no `""`-style non-fallback mechanism; `disableAllHooks` is all-or-nothing) nor apply them cleanly—writing them in would duplicate with stale global entries. These non-env fields therefore rely on global leakage (may be stale/missing); if you need them to apply correctly per provider, switch via cc-switch.
 
 4. **Write settings file**: writes the full settings object to `settings/settings_<id>.json`
 5. **Launch Claude Code**: launches via `claude --settings <file>`, forwarding extra arguments; prints the actual command before launch (for easy copy to other terminals) and injects a `CC_SWITCH_PROVIDER_ID` env var into the subprocess (for external tool identification)

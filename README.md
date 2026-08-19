@@ -25,7 +25,7 @@
 - 只读访问 cc-switch 数据库，不修改原配置
 - 支持交互式选择供应商，同名供应商自动提示选择
 - 自动过滤 `PATH`、`HOME` 等系统关键环境变量，防止误覆盖系统设置
-- 防止全局 env 泄漏：置空全局 `~/.claude/settings.json` 的 env key 再用目标供应商覆盖，避免切换残留或手改导致旧供应商 env 串入本实例
+- 防止全局 env 泄漏：合并 cc-switch 通用配置与供应商特有配置得到完整 env，置空全局 `~/.claude/settings.json` 的泄漏 key 再用完整 env 覆盖，既避免切换残留或手改导致旧供应商 env 串入本实例，又保留通用工具开关
 - 启动时打印实际命令，方便复制到其他终端直接运行
 - 为每个实例注入 `CC_SWITCH_PROVIDER_ID` 环境变量，供外部工具识别当前供应商
 - 配套 PowerShell 脚本生成带 DiceBear 首字母图标的快捷方式，双击即用
@@ -89,7 +89,7 @@ $ProviderName = ""
 $WorkingDirectory = "F:\AI\workspace\Claude"
 ```
 
-运行脚本，会在项目目录下生成 `<清理后名>_<hash>.lnk`（供应商名清理非法字符并加 8 位 hash 后缀，防止不同名清理后塌缩覆盖），`$ProviderName` 为空时生成通用快捷方式 `CC-Launcher.lnk`。脚本还会调用 DiceBear API 生成首字母图标（随机背景色）作为快捷方式图标，下载失败则回退默认图标；生成后提示「输入 1 回车重新生成，其他键退出」。
+运行脚本，会在项目目录下生成 `<清理后名>_<hash>.lnk`（供应商名清理非法字符并加 8 位 hash 后缀，防止不同名清理后塌缩覆盖），`$ProviderName` 为空时生成通用快捷方式 `CC-Launcher.lnk`。脚本还会调用 DiceBear API 生成首字母图标（随机背景色）作为快捷方式图标，下载失败则回退默认图标；生成后提示「输入 1 回车重新生成，其他输入回车退出」。
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File .\create-shortcut.ps1
@@ -116,9 +116,13 @@ node cc-launcher.mjs [供应商名称] [Claude Code 额外参数...]
     - 找到唯一匹配 -> 直接使用
     - 找到多个同名 -> 交互选择具体项
     - 未找到 / 选中项协议不兼容 -> 重新选择
-3. **过滤环境变量**：解析供应商的 `settings_config`，对其 `env` 字段做过滤——跳过系统关键变量（`PATH`、`HOME`、`USERPROFILE` 等），非字符串值置空为 `""`（Claude Code 视为未设置，避免回退全局值）
+3. **过滤环境变量**：合并「通用配置 env + 供应商特有 env」得到完整 targetEnv，对其做过滤——跳过系统关键变量（`PATH`、`HOME`、`USERPROFILE` 等），非字符串值置空为 `""`（Claude Code 视为未设置，避免回退全局值）
 
-    > **隔离机制**：cc-launcher 不改激活态，全局 `~/.claude/settings.json` 的 `env` 会泄漏到本实例（cc-switch 切换时写入，用户手改或切换残留时可能与 DB 不同步）；故直接读该文件的 env，把这些 key 在生成的 settings 里置空（`""`，Claude Code 视为未设置、不被 strip）以抵消泄漏，再用目标供应商的 env 覆盖
+    > **配置来源**：cc-switch 的配置分两处存——通用配置（对所有供应商共享的 env，如 `CLAUDE_CODE_USE_POWERSHELL_TOOL` 等工具行为开关）存于数据库 `settings` 表 `common_config_claude`，供应商特有配置（`ANTHROPIC_BASE_URL` 等真实端点）存于 `providers.settings_config`；cc-switch 切换时合并两者写入全局 `~/.claude/settings.json`（common 覆盖供应商同名 key）。本工具复刻此 env 合并（受 `meta.commonConfigEnabled` 门控：`true` = 跟随 common、`false` = opt-out 不合并），common 胜出以保证改 common 后 `true` 供应商跟随新值，否则通用开关缺失会被隔离逻辑置空丢失
+    >
+    > **隔离机制**：cc-launcher 不改激活态，全局 `~/.claude/settings.json` 的 `env` 会泄漏到本实例（cc-switch 切换时写入，用户手改或切换残留时可能与 DB 不同步）；故直接读该文件的 env，把这些 key 在生成的 settings 里置空（`""`，Claude Code 视为未设置、不被 strip）以抵消泄漏，再用完整 targetEnv 覆盖
+    >
+    > **限制（仅复刻 env）**：本工具只合并 common 的 `env`，不合并其非 env 字段（`hooks`、`permissions`、`enabledPlugins`、`statusLine`、`theme` 等）。Claude Code 对数组型字段（`hooks`、`permissions.allow/deny/ask`）跨 settings 来源是**拼接**而非覆盖，而 cc-launcher 叠在全局 `~/.claude/settings.json` 之上，既无法用"置空"隔离它们（数组没有 env 那种 `""` 不回退机制，`disableAllHooks` 是全杀），也无法干净应用——强行写入会与全局残留重复执行。故这些非 env 字段依赖全局泄漏（可能陈旧/丢失）；如需它们随供应商正确生效，请用 cc-switch 切换
 
 4. **写 settings 文件**：将完整 settings 对象写入 `settings/settings_<id>.json`
 5. **启动 Claude Code**：通过 `claude --settings <file>` 启动，额外参数透传；启动前打印实际命令（方便复制到其他终端），并向子进程注入 `CC_SWITCH_PROVIDER_ID` 环境变量（供外部工具识别当前供应商）

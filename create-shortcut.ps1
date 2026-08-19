@@ -196,7 +196,7 @@ do {
     }
     break
   }
-  $choice = (Read-Host "输入1和回车重新生成，其他键退出").Trim()
+  $choice = (Read-Host "输入 1 回车重新生成，其他输入回车退出").Trim()
 } while ($choice -eq "1")
 
 Write-Host ""
